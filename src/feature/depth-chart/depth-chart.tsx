@@ -166,13 +166,17 @@ export const DepthChart = forwardRef(
       chartRef.current.axis.transform = 1;
     }, [pairCode]);
 
-    // Update chart when dimensions or data change
+    // Resize chart only when dimensions change
     useEffect(() => {
+      if (!chartRef.current) return;
       chartRef.current.resize(width, height);
+    }, [height, width]);
 
+    // Update chart data independently from resize
+    useEffect(() => {
+      if (!chartRef.current) return;
       chartRef.current.data = data;
-      chartRef.current.render();
-    }, [height, width, data]);
+    }, [data]);
     // useEffect(() => {
     //   chartRef.current.resize(
     //     devicePixelContentBoxSizeInlineSize

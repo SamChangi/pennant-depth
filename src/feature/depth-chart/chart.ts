@@ -33,10 +33,14 @@ export class Chart extends EventEmitter {
   private chart: Contents;
   public axis: UI;
 
+  private cumulativeBuy: [number, number][] = [];
+  private cumulativeSell: [number, number][] = [];
   private prices: number[] = [];
   private volumes: number[] = [];
   private priceLabels: string[] = [];
   private volumeLabels: string[] = [];
+  private frameId: number | null = null;
+  private dirty = false;
 
   private _span: number = 1;
   private initialSpan: number = 1;
@@ -136,26 +140,42 @@ export class Chart extends EventEmitter {
     // this.chart.renderer.resize(width - 5 * length - 15, height);
     this.chart.renderer.resize(width, height);
     this.axis.renderer.resize(width, height);
+    this.invalidate();
   }
 
   public destroy() {
+    if (this.frameId !== null) {
+      window.cancelAnimationFrame(this.frameId);
+      this.frameId = null;
+    }
     this.axis.destroy();
+  }
+
+  private invalidate() {
+    this.dirty = true;
+
+    if (this.frameId !== null) {
+      return;
+    }
+
+    this.frameId = window.requestAnimationFrame(() => {
+      this.frameId = null;
+
+      if (!this.dirty) {
+        return;
+      }
+
+      this.dirty = false;
+      this.update();
+      this.render();
+    });
   }
 
   private update() {
     const resolution = this.axis.renderer.resolution;
 
-    const cumulativeBuy = zip<number>(
-      this._data.buy.map((priceLevel) => priceLevel.price),
-      // this._data.buy.map((priceLevel) => priceLevel.volume)
-      cumsum(this._data.buy.map((priceLevel) => priceLevel.volume)),
-    ) as [number, number][];
-
-    const cumulativeSell = zip<number>(
-      this._data.sell.map((priceLevel) => priceLevel.price),
-      // this._data.sell.map((priceLevel) => priceLevel.volume)
-      cumsum(this._data.sell.map((priceLevel) => priceLevel.volume)),
-    ) as [number, number][];
+    const cumulativeBuy = this.cumulativeBuy;
+    const cumulativeSell = this.cumulativeSell;
 
     const midPrice = getMidPrice(
       this._indicativePrice,
@@ -279,28 +299,31 @@ export class Chart extends EventEmitter {
 
     // Add dummy data points at extreme points of price range
     // to ensure the chart looks symmetric
-    if (cumulativeBuy.length > 0) {
-      cumulativeBuy.push([
+    const buyCurvePoints = [...cumulativeBuy];
+    const sellCurvePoints = [...cumulativeSell];
+
+    if (buyCurvePoints.length > 0) {
+      buyCurvePoints.push([
         midPrice - this.maxPriceDifference,
-        cumulativeBuy[cumulativeBuy.length - 1][1],
+        buyCurvePoints[buyCurvePoints.length - 1][1],
       ]);
     }
 
-    if (cumulativeSell.length > 0) {
-      cumulativeSell.push([
+    if (sellCurvePoints.length > 0) {
+      sellCurvePoints.push([
         midPrice + this.maxPriceDifference,
-        cumulativeSell[cumulativeSell.length - 1][1],
+        sellCurvePoints[sellCurvePoints.length - 1][1],
       ]);
     }
 
     this.chart.colors = this._colors;
     this.chart.dimensions = this._dimensions;
     this.chart.update(
-      cumulativeBuy.map((point) => [
+      buyCurvePoints.map((point) => [
         priceScale(point[0]),
         flag ? this.height - resolution * AXIS_HEIGHT : volumeScale(point[1]),
       ]),
-      cumulativeSell.map((point) => [
+      sellCurvePoints.map((point) => [
         priceScale(point[0]),
         flag ? this.height - resolution * AXIS_HEIGHT : volumeScale(point[1]),
       ]),
@@ -369,16 +392,12 @@ export class Chart extends EventEmitter {
 
   set colors(colors: Colors) {
     this._colors = colors;
-
-    this.update();
-    this.render();
+    this.invalidate();
   }
 
   set dimensions(dimensions: Dimensions) {
     this._dimensions = dimensions;
-
-    this.update();
-    this.render();
+    this.invalidate();
   }
 
   get data() {
@@ -391,6 +410,16 @@ export class Chart extends EventEmitter {
     this._data.buy = sortBy(this._data.buy, (priceLevel) => -priceLevel.price);
     this._data.sell = sortBy(this._data.sell, (priceLevel) => priceLevel.price);
 
+    this.cumulativeBuy = zip<number>(
+      this._data.buy.map((priceLevel) => priceLevel.price),
+      cumsum(this._data.buy.map((priceLevel) => priceLevel.volume)),
+    ) as [number, number][];
+
+    this.cumulativeSell = zip<number>(
+      this._data.sell.map((priceLevel) => priceLevel.price),
+      cumsum(this._data.sell.map((priceLevel) => priceLevel.volume)),
+    ) as [number, number][];
+
     this.prices = sortBy([
       ...this._data.buy.map((priceLevel) => priceLevel.price),
       ...this._data.sell.map((priceLevel) => priceLevel.price),
@@ -398,43 +427,25 @@ export class Chart extends EventEmitter {
 
     this.priceLabels = this.prices.map((price) => this.priceFormat(price));
 
-    const cumulativeBuy = zip<number>(
-      this._data.buy.map((priceLevel) => priceLevel.price),
-      // this._data.buy.map((priceLevel) => priceLevel.volume)
-      cumsum(this._data.buy.map((priceLevel) => priceLevel.volume)),
-    ) as [number, number][];
-
-    const cumulativeSell = zip<number>(
-      this._data.sell.map((priceLevel) => priceLevel.price),
-      // this._data.sell.map((priceLevel) => priceLevel.volume)
-      cumsum(this._data.sell.map((priceLevel) => priceLevel.volume)),
-    ) as [number, number][];
-
-    this.volumes = orderBy([...cumulativeBuy, ...cumulativeSell], ["0"]).map(
-      (priceLevel) => priceLevel[1],
-    );
+    this.volumes = orderBy(
+      [...this.cumulativeBuy, ...this.cumulativeSell],
+      ["0"],
+    ).map((priceLevel) => priceLevel[1]);
 
     this.volumeLabels = this.volumes.map((volume) => this.volumeFormat(volume));
-    // this.volumeLabels = this.volumes.map((volume) => String(volume));
-    // console.log(this.volumeLabels);
-    this.update();
-    this.render();
+    this.invalidate();
   }
 
   set indicativePrice(price: number) {
     this._indicativePrice = price;
 
     this.axis.indicativePrice = price;
-
-    this.update();
-    this.render();
+    this.invalidate();
   }
 
   set midPrice(price: number) {
     this._midPrice = price;
-
-    this.update();
-    this.render();
+    this.invalidate();
   }
 
   get height(): number {
@@ -451,8 +462,6 @@ export class Chart extends EventEmitter {
 
   set span(span: number) {
     this._span = span;
-
-    this.update();
-    this.render();
+    this.invalidate();
   }
 }

@@ -13,7 +13,6 @@ import EventEmitter from "eventemitter3";
 import { clamp } from "lodash";
 
 import { bisectCenter } from "../../util/math/array";
-import { getFloatNumber } from "../../util/math/array/cumsum";
 import { AXIS_HEIGHT } from "./depth-chart";
 import {
   HorizontalAxis,
@@ -102,7 +101,11 @@ export class UI extends EventEmitter {
   private prices: number[] = [];
   private volumes: number[] = [];
   private priceLabels: string[] = [];
+  private numericPrices: number[] = [];
   private volumeLabels: string[] = [];
+  private plotWidth: number = 0;
+  private plotHeight: number = 0;
+  private auctionDelaunay: Delaunay<any> | null = null;
   private priceScale: ScaleLinear<number, number> = scaleLinear();
   private volumeScale: ScaleLinear<number, number> = scaleLinear();
   private midPrice: number = 0;
@@ -369,13 +372,23 @@ export class UI extends EventEmitter {
     volumeScale: ScaleLinear<number, number>,
     domain: [number, number],
   ): void {
+    this.plotWidth = width;
+    this.plotHeight = height;
     this.prices = prices;
     this.volumes = volumes;
     this.midPrice = midPrice;
     this.priceLabels = priceLabels;
+    this.numericPrices = priceLabels.map((price) => fRound(price));
     this.volumeLabels = volumeLabels;
     this.priceScale = priceScale;
     this.volumeScale = volumeScale;
+
+    this.auctionDelaunay =
+      this._indicativePrice && this.prices.length > 1
+        ? Delaunay.from(
+            zip<number>(this.prices, this.volumes) as [number, number][],
+          )
+        : null;
 
     const resolution = this.renderer.resolution;
     // const height = this.renderer.view.height;
@@ -458,37 +471,8 @@ export class UI extends EventEmitter {
     if (x && this.prices.length > 1) {
       const resolution = this.renderer.resolution;
       x *= resolution;
-
-      // const numTicks = this.renderer.view.height / resolution / 50;
-      // const ticks = this.volumeScale
-      //   .ticks(numTicks)
-      //   .filter((tick) => tick !== 0);
-      const numTicks = this.renderer.view.height / resolution / 50;
-      const ticks = this.volumeScale.ticks(numTicks);
-      const lgNumber = ticks[ticks.length - 1];
-      const formatTicks = ticks.map((num) => {
-        let numStr = "";
-        if (num >= 1000) {
-          numStr = Intl.NumberFormat("en-US", {
-            notation: "compact",
-            maximumFractionDigits: 2,
-            minimumFractionDigits: 2,
-          }).format(num);
-        } else {
-          const precision = getFloatNumber(num);
-          numStr = num.toLocaleString("en-US", {
-            maximumFractionDigits: precision,
-            minimumFractionDigits: precision,
-          });
-        }
-        return numStr;
-      });
-      // console.log("**VOLUME**", formatTicks[formatTicks.length - 1]);
-      const descFmtStrs = formatTicks.sort((a, b) => b.length - a.length);
-      const size = descFmtStrs[0]?.length + 0.8;
-      // console.log("====", size);
-      const width = this.renderer.view.width - resolution * 8 * size;
-      const height = this.renderer.view.height;
+      const width = this.plotWidth || this.renderer.view.width;
+      const height = this.plotHeight || this.renderer.view.height;
 
       // In auction mode. Curves will in general overlap
       // so use different tooltip behaviour
@@ -496,13 +480,16 @@ export class UI extends EventEmitter {
         const y = (event.data?.global.y as number) * resolution;
         const radius = 50 * resolution;
 
-        // TODO: Cache the result of this calculation
-        const points = zip<number>(this.prices, this.volumes) as [
-          number,
-          number,
-        ][];
+        const delaunay = this.auctionDelaunay;
 
-        const delaunay = Delaunay.from(points);
+        if (!delaunay) {
+          this.auctionPriceText.visible = false;
+          this.auctionVolumeText.visible = false;
+          this.auctionIndicator.visible = false;
+          this.render();
+          return;
+        }
+
         const index = delaunay.find(x, y);
 
         const d = Math.hypot(x - this.prices[index], y - this.volumes[index]);
@@ -606,8 +593,7 @@ export class UI extends EventEmitter {
         // console.log('priceLabels [index]: ', this.priceLabels[buyIndex]);
         this.buyVolRatioText.update(
           (
-            ((fRound(this.priceLabels[buyIndex]) - this.midPrice) /
-              this.midPrice) *
+            ((this.numericPrices[buyIndex] - this.midPrice) / this.midPrice) *
             100
           ).toFixed(2) + "%",
           // width / 2 - buyNearestX > resolution * this.buyVolRatioText.width + 6
@@ -669,7 +655,7 @@ export class UI extends EventEmitter {
         this.sellVolRatioText.update(
           "+" +
             (
-              ((fRound(this.priceLabels[sellIndex]) - this.midPrice) /
+              ((this.numericPrices[sellIndex] - this.midPrice) /
                 this.midPrice) *
               100
             ).toFixed(2) +
@@ -848,37 +834,8 @@ export class UI extends EventEmitter {
     if (x && this.prices.length > 1) {
       const resolution = this.renderer.resolution;
       x *= resolution;
-
-      // const numTicks = this.renderer.view.height / resolution / 50;
-      // const ticks = this.volumeScale
-      //   .ticks(numTicks)
-      //   .filter((tick) => tick !== 0);
-      const numTicks = this.renderer.view.height / resolution / 50;
-      const ticks = this.volumeScale.ticks(numTicks);
-      const lgNumber = ticks[ticks.length - 1];
-      const formatTicks = ticks.map((num) => {
-        let numStr = "";
-        if (num >= 1000) {
-          numStr = Intl.NumberFormat("en-US", {
-            notation: "compact",
-            maximumFractionDigits: 2,
-            minimumFractionDigits: 2,
-          }).format(num);
-        } else {
-          const precision = getFloatNumber(num);
-          numStr = num.toLocaleString("en-US", {
-            maximumFractionDigits: precision,
-            minimumFractionDigits: precision,
-          });
-        }
-        return numStr;
-      });
-      // console.log("**VOLUME**", formatTicks[formatTicks.length - 1]);
-      const descFmtStrs = formatTicks.sort((a, b) => b.length - a.length);
-      const size = descFmtStrs[0]?.length + 0.8;
-      // console.log("====", size);
-      const width = this.renderer.view.width - resolution * 8 * size;
-      const height = this.renderer.view.height;
+      const width = this.plotWidth || this.renderer.view.width;
+      const height = this.plotHeight || this.renderer.view.height;
 
       // In auction mode. Curves will in general overlap
       // so use different tooltip behaviour
@@ -886,13 +843,16 @@ export class UI extends EventEmitter {
         const y = (event.data?.global.y as number) * resolution;
         const radius = 50 * resolution;
 
-        // TODO: Cache the result of this calculation
-        const points = zip<number>(this.prices, this.volumes) as [
-          number,
-          number,
-        ][];
+        const delaunay = this.auctionDelaunay;
 
-        const delaunay = Delaunay.from(points);
+        if (!delaunay) {
+          this.auctionPriceText.visible = false;
+          this.auctionVolumeText.visible = false;
+          this.auctionIndicator.visible = false;
+          this.render();
+          return;
+        }
+
         const index = delaunay.find(x, y);
 
         const d = Math.hypot(x - this.prices[index], y - this.volumes[index]);
@@ -996,8 +956,7 @@ export class UI extends EventEmitter {
         // console.log('priceLabels [index]: ', this.priceLabels[buyIndex]);
         this.buyVolRatioText.update(
           (
-            ((fRound(this.priceLabels[buyIndex]) - this.midPrice) /
-              this.midPrice) *
+            ((this.numericPrices[buyIndex] - this.midPrice) / this.midPrice) *
             100
           ).toFixed(2) + "%",
           // width / 2 - buyNearestX > resolution * this.buyVolRatioText.width + 6
@@ -1059,7 +1018,7 @@ export class UI extends EventEmitter {
         this.sellVolRatioText.update(
           "+" +
             (
-              ((fRound(this.priceLabels[sellIndex]) - this.midPrice) /
+              ((this.numericPrices[sellIndex] - this.midPrice) /
                 this.midPrice) *
               100
             ).toFixed(2) +
